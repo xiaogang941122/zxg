@@ -1,0 +1,337 @@
+代码优化.ipynb
+1    #%% md 
+2    ##### import os 
+3    os.environ['PYTHONHASHSEED'] = '0' 
+4    os.environ["CUDA_VISIBLE_DEVICES"]="" 
+5    #%% 
+6    import numpy as np
+7    my_seed =5 ##5可以
+8    np.random.seed(my_seed)
+9    import random 
+10   random.seed(my_seed)
+11   import tensorflow as tf
+13   tf.random.set_seed(my_seed)
+14   #%% 
+15   zhou = 4
+16   dian = 10
+17   #%% 
+18   import matplotlib.pyplot as plt
+20   import pandas as pd
+21   import seaborn as sns
+22   from numpy import concatenate
+23   from matplotlib import pyplot
+24   from pandas import concat
+25   from sklearn.preprocessing import LabelEncoder
+26   from sklearn.metrics import mean_squared_error
+27   from pandas import DataFrame
+28   from pandas import concat
+29   from sklearn.preprocessing import StandardScaler,Normalizer,MinMaxScaler
+30   from keras.layers import *
+31   from keras.models import *
+32   #导入时间库计时
+33   import time
+34   import warnings
+35   %matplotlib inline
+36   # %config InlineBackend.figure_format = 'svg'
+37   #设置字体为SimHei显示中文  #设置正常显示字符
+38   plt.rcParams['font.sans-serif'] = ['SimHei']
+39   plt.rcParams['axes.unicode_minus'] = False
+40   warnings.filterwarnings("ignore")
+42   #%% 
+43   plt.rc('font', family='Times New Roman')
+44   plt.rc('axes', labelsize=22)
+45   plt.rc('xtick', labelsize=17, color='grey')
+46   plt.rc('ytick', labelsize=17, color='grey')
+47   plt.rc('legend', fontsize=15, loc='lower left')
+48   plt.rc('figure', titlesize=12)
+49   plt.rc('savefig', dpi=500, bbox='tight')
+50   %matplotlib inline
+52   default_colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+53   #%% 
+54   df = pd.read_csv(r"E:\桌面\活\活2（python）\特征选择-csv文件\筛选后的负荷与其它特征.csv")
+55   #%% 
+56   df = df.set_index("datetime")
+57   #%% 
+59   #%% 
+60   df  =df['2015-01-04':'2020-03-09']
+61   #%% 
+62   df
+63   #%% 
+64   true_Y = df.iloc[-24*7:,0].values.copy()
+65   #%% 
+66   df
+67   #%% 
+68   true = df.iloc[-24*7:,:]
+69   df_1 = df.iloc[:-24*7,:]
+70   #%% 
+71   df_load = df_1.values
+72   scaler_load = MinMaxScaler(feature_range=(0,1))
+73   df_load = scaler_load.fit_transform(df_load)
+74   #%% 
+75   scaler_load.transform(true)
+76   #%% 
+77   df_1.iloc[:,:]  = df_load
+78   #%% 
+79   #周期点LSTM输入# time_steps 为取time_steps-1个周 当时间步数，week_steps为一周期多少数据
+80   def train_week(data,time_steps,week_steps ,n_in, n_out, dropnan=True):  
+81       data =data.reshape(-1,1)
+82       n_vars = 1 if type(data) is list else data.shape[1]
+83       df = DataFrame(data)
+84       cols, names = list(), list()
+85       #数据序列(也将就是input) input sequence (t-n, ... t-1)
+86       for i in range(n_in, 0, -1):
+87           cols.append(df.shift(i))
+88           names += [('var%d(t-%d)' % (j + 1, i)) for j in range(n_vars)]
+89           #预测数据（input对应的输出值） forecast sequence (t, t+1, ... t+n)
+90       for i in range(0, n_out):
+91           cols.append(df.shift(-i))
+92           if i == 0:
+93               names += [('var%d(t)' % (j + 1)) for j in range(n_vars)]
+94           else:
+95               names += [('var%d(t+%d)' % (j + 1, i)) for j in range(n_vars)]
+96       #拼接 put it all together
+97       agg = concat(cols, axis=1)
+98       agg.columns = names
+99      # 删除值为NAN的行 drop rows with NaN values
+100      if dropnan:
+101          agg.dropna(inplace=True)
+102      agg = agg.iloc[:, [week_steps*(time_steps-1), week_steps*(time_steps-2),week_steps*(time_steps-3), week_steps*(time_steps-4),week_steps*(time_steps-5)]] #取出每周的相同时刻
+103      train_x = agg.iloc[:,1:].values
+104      train_x = train_x.reshape((train_x.shape[0],train_x.shape[1],1))
+105      train_y = agg.iloc[:,0].values
+106      return train_x,train_y,agg
+107  #%% 
+108  #邻近点LSTM输入
+109  def train_split(timestep, nextstep,train,all_nextstep):   #timestep时间步长, nextstep一次预测多长时间,,all_nextstep总计需要预测时间
+110      # load dataset
+111  #     scaled=scaled.values
+112      train =train.reshape(-1,1)
+113  #     train = scaled[:, :]
+115      train_X = []
+116      train_y = []
+119      # 训练集：
+120      # 利用for循环，遍历整个测试集，提取测试集中连续360min的特征量作为输入特征test_X，第361-370min的发电量作为标签
+121      for i in range(len(train)-timestep-nextstep+1):
+122          train_X.append(train[i:(i+timestep), :])
+123          btemp = train[i+timestep:i+timestep+nextstep, 0]
+124          b = []
+125          for j in range(len(btemp)):
+126              b.append(btemp[j])
+127          train_y.append(b)
+129      # 将训练集由list格式变为array格式
+130      train_X = np.array(train_X)
+131      train_y = np.array(train_y)
+133      # 使x_train符合RNN输入要求：[送入样本数， 循环核时间展开步数， 每个时间步输入特征个数]。
+134      train_X = np.reshape(train_X, (train_X.shape[0],timestep, train_X.shape[2]))
+137      return train_X, train_y
+138  #%% 
+139  #转成有监督数据
+140  def series_to_supervised(data, n_in=1, n_out=1, dropnan=True):
+141      n_vars = 1 if type(data) is list else data.shape[1]
+142      df = DataFrame(data)
+143      cols, names = list(), list()
+144      #数据序列(也将就是input) input sequence (t-n, ... t-1)
+145      for i in range(n_in, 0, -1):
+146          cols.append(df.shift(i))
+147          names += [('var%d(t-%d)' % (j + 1, i)) for j in range(n_vars)]
+148          #预测数据（input对应的输出值） forecast sequence (t, t+1, ... t+n)
+149      for i in range(0, n_out):
+150          cols.append(df.shift(-i))
+151          if i == 0:
+152              names += [('var%d(t)' % (j + 1)) for j in range(n_vars)]
+153          else:
+154              names += [('var%d(t+%d)' % (j + 1, i)) for j in range(n_vars)]
+155      #拼接 put it all together
+156      agg = concat(cols, axis=1)
+157      agg.columns = names
+158      if dropnan:
+159          agg.dropna(inplace=True)
+160      return agg
+161  #%% 
+162  # 用前8个预测1个
+163  df_point = series_to_supervised(df_1,dian,1)
+164  #%% 
+165  df_point = df_point.reset_index(drop=True)
+166  #%% 
+167  #取出8 负荷时间天气
+168  df_point_input = pd.DataFrame()
+169  for i in range (dian+1):
+170      if i < dian:
+171          df_point_input= pd.concat([df_point_input,df_point.iloc[:,df.shape[1]*i]],axis = 1)
+172          df_point_input = pd.concat([df_point_input,df_point.iloc[:,-df.shape[1]+1:]],axis = 1)
+173      else:
+174          df_point_input= pd.concat([df_point_input,df_point.iloc[:,df.shape[1]*i:]],axis =1)
+175  #%% 
+176  #先往前挪四周的点
+177  df_week = series_to_supervised(df_1,zhou*7*24,1)
+178  #%% 
+179  df_week = df_week.reset_index(drop=True)
+180  #%% 
+181  #取出前4周相同时刻的 负荷时间天气
+182  df_week_input = pd.DataFrame()
+183  for i in range (zhou+1):
+184      if i < zhou:
+185          df_week_input = pd.concat([df_week_input,df_week.iloc[:,df.shape[1]*24*7*i]],axis = 1)
+186          df_week_input = pd.concat([df_week_input,df_week.iloc[:,-df.shape[1]+1:]],axis = 1)
+187      else:
+188          df_week_input = pd.concat([df_week_input,df_week.iloc[:,df.shape[1]*24*7*i:]],axis =1)
+189  #%% 
+190  # 将两个lstm输入变为一至，往前挪的长度不一致，导致被消除的行数有所区别，这里统一长度
+191  df_point_input = df_point_input[(df_point_input.shape[0] - df_week_input.shape[0]):]
+192  #%% 
+193  # 构建前四周 相同点输入
+194  df_week_input_1 = df_week_input.iloc[:,:-df.shape[1]]
+195  df_week_input_1 = df_week_input_1.values.reshape(df_week_input_1.shape[0],zhou,df.shape[1])
+196  #%% 
+197  #构建邻近八点 输入
+198  df_point_input_1 = df_point_input.iloc[:,:-df.shape[1]]
+199  df_point_input_1 = df_point_input_1.values.reshape(df_point_input_1.shape[0],dian,df.shape[1])
+200  #%% 
+201  # 输出
+202  df_week_output_1 = df_week_input.iloc[:,-df.shape[1]:]
+203  df_point_output_1 = df_point_input.iloc[:,-df.shape[1]:]
+204  #%% 
+205  #预测总条数 
+206  pre_number = 7*24
+207  #%% 
+208  # 定义自注意力机制
+209  def attention_3d_block(inputs):
+210      input_dim = int(inputs.shape[1])
+211      x = Permute((2,1))(inputs)
+212      x = Dense(input_dim,activation="softmax",name='attention_1')(x)
+213      attention_probs = Permute((2,1))(x)
+214      multipy_layer = Multiply()([inputs,attention_probs])
+215      return multipy_layer
+216  #%% 
+217  # input1 为临近点输入 临近点取的是步
+218  input1 = Input(shape=(df_point_input_1.shape[1], df_point_input_1.shape[2]))
+219  conv_out1_1 = Conv1D(filters=32, kernel_size=round(dian/2), activation='sigmoid')(input1) #24
+221  lstm_1_1 = GRU(32,activation='sigmoid',return_sequences=True,stateful=False)(conv_out1_1)
+222  lstm_1_1 = Dropout(0.1)(lstm_1_1)#0.1
+223  # z1 = Lambda(lambda k: K.permute_dimensions(k, (0, 2, 1)))(lstm1out_1)
+224  # conv_out1_1 = Conv1D(filters=24, kernel_size=dian, activation='relu')(lstm_1_1) #24
+225  lstm_1_2 = GRU(24,activation='sigmoid',return_sequences=False,stateful=False)(lstm_1_1)
+226  #%% 
+227  # input2 为临近周同时刻输入 取的是步
+228  input2 = Input(shape=(df_week_input_1.shape[1], df_week_input_1.shape[2]))
+229  conv_out2_1 = Conv1D(filters=32, kernel_size=round(zhou/2), activation='sigmoid')(input2) #12
+230  lstm_2_1 =GRU(32,activation='sigmoid',return_sequences=True,stateful=False)(conv_out2_1)
+231  lstm_2_1 = Dropout(0.1)(lstm_2_1) #0.1
+232  # z1 = Lambda(lambda k: K.permute_dimensions(k, (0, 2, 1)))(lstm1out_1)
+233  lstm_2_2 = GRU(24,activation='sigmoid',return_sequences=False,stateful=False)(lstm_2_1)
+234  #%% 
+235  # 合并input1 input2  为 lstm （2，32）
+236  lstm_1_2_rv = RepeatVector(1)(lstm_1_2)
+237  # lstm_2_2 = RepeatVector(1)(lstm_2_2)
+238  lstm_2_2_rv = RepeatVector(1)(lstm_2_2)
+239  lstm = Concatenate(axis=1)([lstm_1_2_rv,lstm_2_2_rv])
+240  #%% 
+241  lstm
+242  #%% md 
+243  #自注意力机制 
+244  attention_layer = attention_3d_block(lstm) 
+245  #%% 
+246  # 编译输出
+247  flatten = Flatten()(lstm)
+248  output = Dense(32)(flatten) #64
+249  # output1 = Dense(32)(output)
+250  output2 = Dense(1, activation="relu")(output)
+251  model = Model(inputs=[input1,input2], outputs=output2)
+252  model.summary()
+253  model.compile(loss=tf.keras.losses.MeanSquaredError(), optimizer='adam') #tf.keras.losses.Huber()
+254  start_time = time.time()
+255  history = model.fit([df_point_input_1,df_week_input_1],df_week_output_1.iloc[:,0].values, epochs=120, batch_size=96*6,verbose=2)
+256  #%% 
+257  end_time = time.time()
+258  run_time = end_time-start_time#运行时间
+259  #%% 
+260  fig = plt.figure(figsize=(15,7))
+261  pyplot.plot(model.history.history['loss'], label='train')
+262  # pyplot.title('负荷 loss')
+263  pyplot.ylabel('loss')
+264  pyplot.xlabel('epoch')
+265  pyplot.legend()
+266  pyplot.show()
+267  #%% md 
+268  # 画图查看网络结构 
+269  from IPython.display import SVG 
+270  from keras.utils.vis_utils import model_to_dot 
+271  from keras.utils import plot_model 
+272  display(SVG(model_to_dot(model,show_shapes=True).create(prog='dot', format='svg'))) 
+273  plot_model(model,show_shapes=True,dpi=500,to_file=r'C:\Users\Administrator\Desktop\活\接活论文\模型图片\模型.png') 
+274  #%% 
+275  #构建预测输入数据
+276  df_week_input_pre = df_week_input.iloc[-pre_number:,-zhou*df.shape[1]:]
+277  #%% 
+278  true_input = scaler_load.transform(true)
+279  true.iloc[:,:]  = true_input
+280  true = true.reset_index(drop = True)
+281  #%% 
+282  df_week_input_pre
+283  #%% 
+284  df.shape[1]
+285  #%% 
+286  df_week_input_pre = df_week_input_pre.reset_index(drop = True)
+287  df_week_input_pre_1 = pd.DataFrame()
+288  for i in range (zhou+1):
+289      if i < zhou:
+290          df_week_input_pre_1 = pd.concat([df_week_input_pre_1,df_week_input_pre.iloc[:,df.shape[1]*i]],axis = 1)
+291          df_week_input_pre_1 = pd.concat([df_week_input_pre_1,true.iloc[:,-df.shape[1]+1:]],axis = 1)
+292  df_week_input_pre_1 = df_week_input_pre_1.values.reshape(df_week_input_pre.shape[0],zhou,df.shape[1])
+293  #%% 
+294  #构建临近点预测输入
+295  df_point_input_pre = df_point_input.iloc[-dian:,-df.shape[1]:]
+296  df_point_input_pre =df_point_input_pre.reset_index(drop=True)
+297  #%% 
+298  true_wea_time = true.loc[true.index.repeat(dian)].reset_index(drop=True).iloc[:,1:]
+299  #%% 
+300  df_point_input_pre = df_point_input_pre.iloc[:,[0]]
+301  #%% 
+302  pred = true.copy()
+303  #%% 
+304  #predict
+305  #因为每次只能预测 1 个数据，但是我要预测24个数据，所以采用的就是循环预测的思路。每次预测的1个数据，添加到数据集中充当预测x，然后在预测新的1个y，再添加到预测x列表中，如此往复。最终预测出24个点。
+306  predict_xlist1 = []#添加预测x列表
+307  predict_x1 = []
+308  predict_x2 = []
+309  predict_y_inv = []#添加预测y列表
+310  predict_xlist1.extend(df_point_input_pre.iloc[:,0].values.tolist())
+311  for i in range(24*7):
+312      predict_x1 = np.append(np.array(predict_xlist1[-dian:]).reshape(-1,1),true_wea_time.iloc[dian*i:dian*(i+1),:].values,axis = 1)
+313      predict_x1 = predict_x1.reshape(1,dian,df.shape[1])
+314      
+315      predict_x2 = df_week_input_pre_1[i].reshape((1,zhou,df.shape[1]))
+316      #预测新值
+317      lstm_predict = model.predict([predict_x1,predict_x2])
+318      #predict_list.append(train_predict)#新值y添加进列表，做x
+319  #滚动预测
+320      predict_xlist1.extend(lstm_predict[0])#将新预测出来的predict_steps个数据，加入predict_xlist列表，用于下次预测
+322  # invert
+323      predict_y_inv.extend(lstm_predict[0])#预测的结果y，每次预测的1个数据，添加进去，直到预测24个为止
+325  pred.iloc[:,0] = predict_y_inv
+326  predict_y = scaler_load.inverse_transform(pred)
+327  #%% 
+329  #%% 
+330  predict_y = pd.DataFrame(predict_y).iloc[:,0].values
+331  #%% 
+332  fig = plt.figure(figsize=(15,7))
+333  pyplot.plot(np.array(predict_y),'r',label='prediction')
+334  pyplot.plot(true_Y,'b',label='true')
+335  pyplot.legend(loc='upper right')
+336  pyplot.show()
+338  # calculate RMSE 
+339  rmse = np.sqrt(mean_squared_error(np.array(predict_y),true_Y))
+340  print('Test RMSE: %.3f' % rmse)
+341  def mape(Pre,true):
+342      return np.mean(np.abs((Pre - true) / true)) * 100
+343  def smape(Pre,true):
+344      return 2.0 * np.mean(np.abs(Pre - true) / (np.abs(Pre) + np.abs(true))) * 100
+345  print('Test Mape: %.3f' % mape(np.squeeze(np.array(predict_y)),true_Y))
+346  print('Test SMape: %.3f' % smape(np.squeeze(np.array(predict_y)),true_Y))
+347  print(f'模型运行时间:{run_time:7.3f} S')
+348  #%% md 
+349  c = pd.DataFrame(true_Y,columns=["真实值"]) 
+350  c.to_csv(r"C:\Users\Administrator\Desktop\活\接活论文\2020.03表现最好\2020年03月真实值结果.csv",sep=',',index=False,header=True,encoding='utf-8-sig') 
+351  #%% md 
+352  c = pd.DataFrame(predict_y,columns=["预测值"]) 
+353  c.to_csv(r"C:\Users\Administrator\Desktop\活\接活论文\2020.06\2020年06月预测结果.csv",sep=',',index=False,header=True,encoding='utf-8-sig')
